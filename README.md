@@ -1,7 +1,7 @@
-# ProVerif models of the Consumer Remote SIM Provisioning (RSP) Protocol
-Remote SIM provisioning (RSP) for consumer devices is a protocol for downloading the mobile subscriber credentials to a secure element in the mobile device, so that they can be used for authentication between the device and mobile network.
+# ProVerif models of the consumer Remote SIM Provisioning (RSP) Protocol
+Remote SIM provisioning (RSP) for consumer devices is a protocol for downloading the mobile subscriber credentials to a secure element in the mobile device to be used for authentication between the device and the mobile network.
 
-The RSP specification supports two different approaches to profile ordering and download initialization: (1) default server, and (2) activation code. The ProVerif models in this directory model and analyze both approaches.
+The RSP specification supports two profile ordering and download initialization approaches: (1) the default server approach and (2) the activation code (ac) approach. The ProVerif models in this directory model and analyze both approaches.
 
 ## Naming convention
 ```
@@ -19,11 +19,15 @@ format:    pv | log
 ```
 
 ## Reproducing the results
-The models have been tested with version 2.04. of [ProVerif](https://bblanche.gitlabpages.inria.fr/proverif/). Instructions for installation and usage can be found in the [manual](https://bblanche.gitlabpages.inria.fr/proverif/manual.pdf).
+The models have been tested with [ProVerif](https://bblanche.gitlabpages.inria.fr/proverif/) version 2.04. The scripts are written for Linux and have been tested with Ubuntu 20.04.
 
 __Create all models__:
 ```bash
 $ make models
+```
+__Create models with all queries in the same file__:
+```bash
+$ make models_all_queries
 ```
 __Delete generated files__:
 ```bash
@@ -33,11 +37,11 @@ __Run one query in one model__:
 ```bash
 $ make verify [host]
 ```
-__Show status of running queries__:
+__Show the status of running queries__:
 ```bash
 $ make ps [host]
 ```
-__Retrieve results from host__:
+__Retrieve results from the host__:
 ```bash
 $ make retrieve [host]
 ```

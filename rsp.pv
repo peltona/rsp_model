@@ -25,6 +25,7 @@
 #endif
 
 #if defined SCENARIO_2
+(* In Scenario 2, the LPA-SMDP TLS tunnel is compromised and thus not modeled. *)
 #undef USE_TLS
 #endif
 
@@ -38,13 +39,36 @@ set keyCompromise = strict.
 set keyCompromise = none.
 #endif
 
+#if defined SEC_W || defined SEC_X || defined SEC_Y || defined SEC_Z
+#define FORWARD_SECRECY
+#endif
+
+#if ((defined SCENARIO_3 && defined SEC_Z) || (defined SCENARIO_6 && defined SEC_Z) || (defined CODE && defined SCENARIO_4 && defined AUTH_E) || (defined CODE && defined SCENARIO_4 && defined AUTH_F) || (defined CODE && defined SCENARIO_4 && defined AUTH_G) || (defined CODE && defined SCENARIO_6 && defined SEC_Y) || (defined SCENARIO_3 && defined AUTH_E) || (defined SCENARIO_3 && defined AUTH_F) || (defined SCENARIO_3 && defined AUTH_G) || (defined SCENARIO_6 && defined AUTH_E) || (defined SCENARIO_6 && defined AUTH_F) || (defined SCENARIO_6 && defined AUTH_G))
+(* Enable the preciseActions for selected cases to guide ProVerif *)
+set preciseActions = true.
+#endif
+
 #if defined AUTH_H
 #define NOTIFICATION_RESPONSE
-(* Including notification response in the model for Auth H. *)
+(* Include the notification response in the model for Auth H *)
 #endif
 
 #if SEPARATE_ATTACKER_EUICC && (defined AUTH_B || defined AUTH_D)
-(* Warning: Disable SEPARATE_ATTACKER_EUICC for AUTH_B and AUTH_D to catch more attacks. *)
+(* Warning: Disable SEPARATE_ATTACKER_EUICC for Auth B and Auth D to catch more attacks! *)
+#endif
+
+#if defined R10
+(* Recommendation 10: enabling Recommendations 1, 2, 3, 7, and 9 *)
+#define R1
+#define R2
+#define R3
+#define R7
+#define R9
+#endif
+
+#if ((defined SCENARIO_3 || defined SCENARIO_6) && (defined AUTH_E || defined AUTH_F || defined AUTH_G))
+(* Restriction enabled for Auth E,F,G, in scenarions 2,6 *)
+#define RESTRICT_DH_REPLAY
 #endif
 
 (* ===== CHANNELS ===== *)
@@ -122,6 +146,8 @@ event AUTHORIZE(Id_t).
 event ORDER(UserId_t,Id_t,Id_t,Id_t,Profile_t,Code_t).
 event S0(Id_t,SessionId_t,Id_t,Id_t,Code_t).
 event S1(Id_t,Id_t,Id_t,SessionId_t,Id_t,Code_t).
+event QU_RECEIVED(G_t).
+event QS_SENT(G_t).
 event S2(Id_t,Id_t,Id_t,SessionId_t,K_t,Profile_t,Id_t,Code_t).
 event S3(Id_t,Id_t,Id_t,SessionId_t,Profile_t,Id_t,Id_t).
 
@@ -161,24 +187,11 @@ reduc forall k:K_t, P:Profile_t;
   D(E(P,k),k) = P
 .
 
-#if defined OPTIMIZED_DH_MODEL
-(* Diffie-Hellman optimized *)
-fun DH_1(e_t): G_t.
-fun DH_3(e_t): G_t.
-fun DHKey(e_t,e_t): G_t.
-reduc forall x:e_t, y:e_t;
-  DH_2(y,DH_1(x)) = DHKey(x,y)
-.
-reduc forall x:e_t, y:e_t;
-  DH_4(x,DH_3(y)) = DHKey(x,y)
-.
-#else
 (* Diffie-Hellman key exchange *)
 fun DH(e_t,G_t): G_t.
 equation forall x:e_t, y:e_t;
   DH(y,DH(x,G)) = DH(x,DH(y,G))
 .
-#endif
 
 (* MAC *)
 fun MAC(bitstring,K_t): MAC_t.
@@ -220,9 +233,9 @@ let MNO(PK_CI:K_t) =
 
     #if defined DEFAULTS
     (* MNO -> SMDP: 1. iccid, U
-      Secure channel represents mutual TLS.
-      S is the subject identifier of (SM-DP) server TLS certificate
-      mnoId is the subject identifier of (MNO) client TLS certificate. *)
+       Secure channel represents mutual TLS.
+       S is the subject identifier of (SM-DP) server TLS certificate
+       mnoId is the subject identifier of (MNO) client TLS certificate. *)
     out(MNO2SMDP_TLS_UP, (mnoId,S,iccid,U,userId));
 
     (* SMDP -> MNO: 2. P, iccid *)
@@ -234,8 +247,8 @@ let MNO(PK_CI:K_t) =
     #endif
 
     (* MNO -> LPA: 3. User Intent Reply
-      Freshness comes from iccid.
-      mnoId is the subject identifier of the (MNO) server TLS certificate. *)
+       Freshness comes from iccid.
+       mnoId is the subject identifier of the (MNO) server TLS certificate. *)
     #if defined R2
     (* Enable Recommendation 2 *)
     out(LPA2MNO_TLS_DOWN, (mnoId,S,serverOID,tlsReplayNonce));
@@ -245,9 +258,9 @@ let MNO(PK_CI:K_t) =
 
     #else
     (* MNO -> SMDP: 1. iccid, [U]
-      Secure channel represents two-way TLS.
-      S is the subject identifier of (SM-DP) server TLS certificate
-      mnoId is the subject identifier of (MNO) client TLS certificate. *)
+       Secure channel represents two-way TLS.
+       S is the subject identifier of (SM-DP) server TLS certificate
+       mnoId is the subject identifier of (MNO) client TLS certificate. *)
     #if defined R3
     (* Enable Recommendation 3 *)
     out(MNO2SMDP_TLS_UP, (mnoId,S,iccid,U,userId));
@@ -274,7 +287,15 @@ let MNO(PK_CI:K_t) =
     #endif
     #endif
     0
-   )
+  )
+  #if defined FORWARD_SECRECY
+  |
+  (
+    phase 1;
+    out(c,(SK_MNO));
+    0
+  )
+  #endif
 .
 
 (* SM-DP+ Server *)
@@ -289,6 +310,7 @@ let SMDP(PK_CI:K_t)=
   new SK_St:K_t; let PK_St = pk(SK_St) in
   new SK_Sa:K_t; let PK_Sa = pk(SK_Sa) in
   new SK_Sp:K_t; let PK_Sp = pk(SK_Sp) in
+  (* GSMA authorizes the server to issue profiles *)
   event AUTHORIZE(Sp);
   (* Create certificates *)
   let Cert_St = certificate(S,PK_St,serverOID,tls) in
@@ -298,7 +320,7 @@ let SMDP(PK_CI:K_t)=
   out(c, (Cert_St,Cert_Sa,Cert_Sp));
 
   #if defined SCENARIO_2
-  (* Scenario 2 *)
+  (* Scenario 2: The adversary has all the private keys of the SM-DP+ server *)
   out(c, (SK_St,SK_Sa,SK_Sp));
   #endif
   !(
@@ -311,6 +333,7 @@ let SMDP(PK_CI:K_t)=
     let Iac = CODE_NULL in
     new P:Profile_t;
 
+    (* Server receives an order for a profile from MNO *)
     event ORDER(userId,mnoId,S,U_OR_NULL,P,Iac);
 
     (* SMDP -> MNO: 2. P, iccid *)
@@ -339,6 +362,7 @@ let SMDP(PK_CI:K_t)=
     out(c, Iac);
     #endif
 
+    (* Server receives an order for a profile from MNO *)
     event ORDER(userId,mnoId,S,U_OR_NULL,P,Iac);
 
     (* SMDP -> MNO: 2. Iac, serverOID, P, iccid *)
@@ -354,7 +378,7 @@ let SMDP(PK_CI:K_t)=
        SMDP is authenticated by TLS. The TLS client is anonymous at this stage. *)
     in(SMDP_TLS_HANDSHAKE, (=S,LPA2SMDP_TLS:channel));
     #else
-    (* Not TLS, use the public channel *)
+    (* No TLS, communication over the public channel *)
     #endif
 
     (* LPA -> SMDP: 3. N_U, S, SKI_CI *)
@@ -363,6 +387,7 @@ let SMDP(PK_CI:K_t)=
     new It:SessionId_t; (* Session identifier *)
     new NS:Nonce_t;     (* Server challenge *)
 
+    (* Server begins authentication of the eUICC *)
     event S0(Sa,It,S,mnoId,Iac);
 
     (* SMDP -> LPA: 4. Cert_Sa, sign(I_t,N_S,N_U,S;SK_Sa) *)
@@ -372,9 +397,17 @@ let SMDP(PK_CI:K_t)=
     let (Up:Id_t,PK_U:K_t,=OID_NULL,=uicc) =
       checkcert(Cert_U,PK_CI) in
 
-    #if defined R7
-    (* Enable Recommendation 4 *)
+    #if defined R7 && defined R8
+    (* Enable Recommendations R7 and R8 *)
+    let (=It,=NS,=S,=Iac,=serverOID) =
+      checksign(sign_7,PK_U) in
+    #elif defined R7 && !defined R8
+    (* Enable Recommendation R7 *)
     let (=It,=NS,S1_host:Id_t,=Iac,=serverOID) =
+      checksign(sign_7,PK_U) in
+    #elif !defined R7 && defined R8
+    (* Enable Recommendation R8 *)
+    let (=It,=NS,=S,=Iac) =
       checksign(sign_7,PK_U) in
     #else
     let (=It,=NS,S1_host:Id_t,=Iac) =
@@ -382,15 +415,19 @@ let SMDP(PK_CI:K_t)=
     #endif
 
     #if defined DEFAULTS || defined R3
+    #if defined R3
+    (* Enable Recommendation R3 *)
+    #endif
     (* Authorize the profile request with U *)
     if Up = U then
     #endif
 
+    (* Server completes authentication of the eUICC *)
     event S1(Up,Sa,Sp,It,mnoId,Iac);
 
     (* SMDP -> LPA: 8. sign(I_t;SK_Sp), Cert_Sp *)
-    #if defined R8
-    (* Enable Recommendation 8 *)
+    #if defined R9
+    (* Enable Recommendation 9 *)
     out(LPA2SMDP_TLS, (msg8_s,sign((It,Up),SK_Sp),Cert_Sp));
     #else
     out(LPA2SMDP_TLS, (msg8_s,sign((It,DUMMY_s),SK_Sp),Cert_Sp));
@@ -400,45 +437,54 @@ let SMDP(PK_CI:K_t)=
     in(LPA2SMDP_TLS, sign_11:Sig_t);
     let (=It,QU:G_t) =
       checksign(sign_11,PK_U) in
+    event QU_RECEIVED(QU);
 
     (* DH *)
     new dS:e_t;
-    #if defined OPTIMIZED_DH_MODEL
-    let QS = DH_1(dS) in
-    let ZUS = DH_4(dS,QU) in
-    #else
     let QS = DH(dS,G) in
     let ZUS = DH(dS,QU) in
-    #endif
 
     let k = KDF(ZUS,serverOID,Up) in
     let kp = KDF(ZUS,serverOID,Up) in
 
-    (* Profile download and authentication *)
-    let EP = E(P,k) in
-    let MAC_EP = MAC((EP_s,EP),kp) in
-    let MAC_MNO = MAC((mnoId_s,mnoId),kp) in
-    let MAC_ICCID = MAC((iccid_s,iccid),kp) in
+    (
+      (* Profile download and authentication *)
+      let EP = E(P,k) in
+      let MAC_EP = MAC((EP_s,EP),kp) in
+      let MAC_MNO = MAC((mnoId_s,mnoId),kp) in
+      let MAC_ICCID = MAC((iccid_s,iccid),kp) in
 
-    event S2(Up,Sa,Sp,It,k,P,mnoId,Iac);
+      (* Server starts key agreement and profile delivery *)
+      event QS_SENT(QS);
+      event S2(Up,Sa,Sp,It,k,P,mnoId,Iac);
 
-    (* SMDP -> LPA: 12. E(P;k), MAC(E(P;k);k'), mnoId, MAC(mnoId;k'),
-                        iccid, MAC(iccid;k), sign(I_t,Q_S,Q_U,serverOID;SK_Sp) *)
-    out(LPA2SMDP_TLS, (msg12_s,EP,MAC_EP,mnoId,MAC_MNO,iccid,MAC_ICCID,sign((It,QS,QU,serverOID),SK_Sp)));
+      (* SMDP -> LPA: 12. E(P;k), MAC(E(P;k);k'), mnoId, MAC(mnoId;k'),
+                          iccid, MAC(iccid;k), sign(I_t,Q_S,Q_U,serverOID;SK_Sp) *)
+      out(LPA2SMDP_TLS, (msg12_s,EP,MAC_EP,mnoId,MAC_MNO,iccid,MAC_ICCID,sign((It,QS,QU,serverOID),SK_Sp)));
 
-    (* LPA -> SMDP: 15. sign(I_t,Seq,S,serverOID,iccid;SK_U) *)
-    in(LPA2SMDP_TLS, sign_15:Sig_t);
-    let (=It,Seq:Seq_t,=S,=serverOID,=iccid) =
-      checksign(sign_15,PK_U) in
+      (* LPA -> SMDP: 15. sign(I_t,Seq,S,serverOID,iccid;SK_U) *)
+      in(LPA2SMDP_TLS, sign_15:Sig_t);
+      let (=It,Seq:Seq_t,=S,=serverOID,=iccid) =
+        checksign(sign_15,PK_U) in
 
-    event S3(Up,Sa,Sp,It,P,S,mnoId);
+      (* Server accepts profile download notification *)
+      event S3(Up,Sa,Sp,It,P,S,mnoId);
 
-    #if defined NOTIFICATION_RESPONSE
-    (* SMDP -> LPA: 16. HTTP OK *)
-    out(LPA2SMDP_TLS, (msg16_s,HTTP_OK_s));
+      #if defined NOTIFICATION_RESPONSE
+      (* SMDP -> LPA: 16. HTTP OK *)
+      out(LPA2SMDP_TLS, (msg16_s,HTTP_OK_s));
+      #endif
+      0
+    )
+    #if defined FORWARD_SECRECY
+    |
+    (
+      phase 1;
+      out(c,(SK_St,SK_Sa,SK_Sp));
+      0
+    )
     #endif
-    0
-   )
+  )
 .
 
 (* LPA and User as one process *)
@@ -453,6 +499,7 @@ let LPA(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
   (
     (* Choose honest LPA behavior *)
     if chosenBehavior = userId then
+    (* User is the owner of an eUICC *)
     event OWNER(userId,U);
     !(
       (* User selects an MNO to which they want to request a profile *)
@@ -462,6 +509,7 @@ let LPA(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
 
       #if defined DEFAULTS
       (* === Default SM-DP+ profile Initialization === *)
+      (* User requests a profile from an MNO *)
       event INTENT(userId,mnoId,U,CODE_NULL);
       #else
       (* === AC based profile initialization === *)
@@ -471,9 +519,9 @@ let LPA(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
 
       #if defined DEFAULTS
       (* LPA -> MNO: 0. U
-        mnoId is the subject identifier in (MNO) server TLS certificate.
-        userId is the authenticated user identity that request a profile.
-        tlsRelayNonce models the replay prevention in TLS_DOWN. *)
+         mnoId is the subject identifier in (MNO) server TLS certificate.
+         userId is the authenticated user identity that request a profile.
+         tlsRelayNonce models the replay prevention in TLS_DOWN. *)
       out(LPA2MNO_TLS_UP, (mnoId,U,userId,tlsReplayNonce));
       (* MNO -> LPA: 3. User intent reply (I_ac, S) *)
       #if defined R2
@@ -489,9 +537,9 @@ let LPA(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
 
       #else
       (* LPA -> MNO: 0. [U]
-        mnoId is the subject identifier in (MNO) server TLS certificate.
-        userId is the authenticated user identity that request a profile.
-        tlsRelayNonce models the replay prevention in TLS_DOWN. *)
+         mnoId is the subject identifier in (MNO) server TLS certificate.
+         userId is the authenticated user identity that request a profile.
+         tlsRelayNonce models the replay prevention in TLS_DOWN. *)
       out(LPA2MNO_TLS_UP, (mnoId,U,userId,tlsReplayNonce));
       (* MNO -> LPA: 3. Iac, S, [serverOID] *)
       #if defined R1
@@ -502,11 +550,12 @@ let LPA(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
       in(LPA2MNO_TLS_DOWN, (=mnoId,Iac:Code_t,S:Id_t,=OID_NULL,=tlsReplayNonce));
       #endif
 
+      (* User requests a profile from an MNO *)
       event INTENT(userId,mnoId,U,Iac);
       #endif
 
-      (* Scenario 11: The attacker can send an Iac code to any LPA *)
       #if defined SCENARIO_11
+      (* Scenario 11: The attacker can send an Iac code to any LPA *)
       in(c, AttackerIac:Code_t);
       let Iac = AttackerIac in
       #endif
@@ -520,7 +569,7 @@ let LPA(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
       new LPA2SMDP_TLS:channel;
       out(SMDP_TLS_HANDSHAKE, (S,LPA2SMDP_TLS));
       #else
-      (* No TLS, use the public channel *)
+      (* No TLS, communication over the public channel *)
       #endif
 
       (* LPA -> eUICC: 1. GetChallenge *)
@@ -548,8 +597,13 @@ let LPA(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
         (* Compare S in message 4 with the know TLS server name.
            eUICC will check that the separate S equals the signed S. *)
         in(LPA2SMDP_TLS, (=msg4_s,Cert_Sa:Cert_t,=S,sign_4:Sig_t));
-        #if (defined DEFAULTS && defined R2) || (!defined DEFAULTS && defined R1)
-        (* Enable Recommendation 1 or 2 *)
+        #if (!defined DEFAULTS && defined R1) || (defined DEFAULTS && defined R2)
+        #if defined R1
+        (* Enable Recommendation 1 *)
+        #endif
+        #if defined R2
+        (* Enable Recommendation 2 *)
+        #endif
         let (Sa:Id_t,PK_Sa:K_t,=serverOID,=auth) =
           checkcert(Cert_Sa,PK_CI) in
         #else
@@ -562,8 +616,7 @@ let LPA(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
 
         (* eUICC -> LPA: 6. Cert_U, Cert_EUM, sign(I_t,N_S,S,I_ac;SK_U) *)
         in(LPA2EUICC, (Cert_U:Cert_t,sign_6:Sig_t));
-        (* No need to check Recommendation R7 in minimal model,
-         the eUICC should have sent it *)
+        (* No need to enable Recommendation R7 in minimal model *)
 
         (* LPA -> SMDP: 7. Cert_U, Cert_EUM, sign(I_t,N_S,S,I_ac;SK_U) *)
         out(LPA2SMDP_TLS, (Cert_U,sign_6));
@@ -573,8 +626,8 @@ let LPA(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
       (
         (* SMDP -> LPA: 8. sign(I_t;SK_Sp), Cert_Sp *)
         in(LPA2SMDP_TLS, (=msg8_s,sign_8:Sig_t,Cert_Sp:Cert_t));
-        (* No need to check Recommendation R8 in minimal model,
-         the eUICC should check this *)
+
+        (* No need to enable Recommendation R9 in minimal model *)
 
         (* LPA -> eUICC: 9. sign(I_t;SK_Sp), Cert_Sp *)
         out(LPA2EUICC, (sign_8,Cert_Sp));
@@ -594,7 +647,7 @@ let LPA(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
         in(LPA2SMDP_TLS, (=msg12_s,EP:bitstring,MAC_EP:MAC_t,=mnoId,MAC_MNO:MAC_t,iccid:ProfileId_t,MAC_ICCID:MAC_t,sign_12:Sig_t));
 
         (* LPA -> eUICC: 13. E(P;k), MAC(E(P;k);k'), mnoId, MAC(mnoId;k'),
-                            iccid, MAC(iccid;k), sign(I_t,Q_S,Q_U,serverOID;SK_Sp) *)
+                             iccid, MAC(iccid;k), sign(I_t,Q_S,Q_U,serverOID;SK_Sp) *)
         out(LPA2EUICC, (EP,MAC_EP,mnoId,MAC_MNO,iccid,MAC_ICCID,sign_12));
 
         (* eUICC -> LPA: 14. sign(I_t,Seq,S,serverOID,iccid;SK_U) *)
@@ -620,15 +673,20 @@ let LPA(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
       #endif
 
       #else
-      (* Strict LPA model: LPA forwards messages between SMDP and eUICC
-         and checks everything it can in the messages *)
+      (* Strict LPA model: LPA forwards messages between SMDP and eUICC and
+         verifies everything it can in the messages *)
 
       (* SMDP -> LPA: 4. Cert_Sa, sign(I_t,N_S,N_U,S;SK_Sa) *)
       (* Compare S in message 4 with the know TLS server name.
          The separate S and signed S must be the same. *)
       in(LPA2SMDP_TLS, (=msg4_s,Cert_Sa:Cert_t,=S,sign_4:Sig_t));
       #if (defined DEFAULTS && defined R2) || (!defined DEFAULTS && defined R1)
-      (* Enable Recommendation 1 or 2 *)
+      #if defined R1
+      (* Enable Recommendation 1 *)
+      #endif
+      #if defined R2
+      (* Enable Recommendation 2 *)
+      #endif
       let (Sa:Id_t,PK_Sa:K_t,=serverOID,=auth) =
         checkcert(Cert_Sa,PK_CI) in
       #else
@@ -660,8 +718,8 @@ let LPA(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
       in(LPA2SMDP_TLS, (=msg8_s,sign_8:Sig_t,Cert_Sp:Cert_t));
       let (Sp:Id_t,PK_Sp:K_t,=serverOID,=pb) =
         checkcert(Cert_Sp,PK_CI) in
-      #if defined R8
-      (* Enable Recommendation 8 *)
+      #if defined R9
+      (* Enable Recommendation 9 *)
       let (=It,=U) =
         checksign(sign_8,PK_Sp) in
       #else
@@ -688,7 +746,7 @@ let LPA(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
         checksign(sign_12,PK_Sp) in
 
       (* LPA -> eUICC: 13. E(P;k), MAC(E(P;k);k'), mnoId, MAC(mnoId;k'),
-                          iccid, MAC(iccid;k), sign(I_t,Q_S,Q_U,serverOID;SK_Sp) *)
+                           iccid, MAC(iccid;k), sign(I_t,Q_S,Q_U,serverOID;SK_Sp) *)
       out(LPA2EUICC, (EP,MAC_EP,mnoId,MAC_MNO,iccid,MAC_ICCID,sign_12));
 
       (* eUICC -> LPA: 14. sign(I_t,Seq,S,serverOID,iccid;SK_U) *)
@@ -714,17 +772,20 @@ let LPA(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
     )
   )
   #if defined SCENARIO_4
-  | (
+  |
+  (
     (* Scenario 4: Leak the LPA-eUICC channel *)
     out(c, LPA2EUICC);
     0
   )
   #endif
   #if !defined SEPARATE_ATTACKER_EUICC && !defined SCENARIO_4
-  | (
+  |
+  (
     (* Attacker-controlled eUICC as a branch of the normal eUICC process *)
-    (* Choose attacker-owned LPA behavior *)
     if chosenBehavior = AttackerUserId then
+    (* Choose attacker-owned LPA behavior *)
+    (* Attacker is the owner of the 2nd compromised eUICC *)
     event OWNER(AttackerUserId,U);
     insert ATTACKER_EUICC(U);
     out(c, LPA2EUICC);
@@ -766,6 +827,7 @@ let EUICC(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
     (* eUICC challenge *)
     new NU:Nonce_t;
 
+    (* eUICC begins authentication of the server *)
     event U0(U,S_OR_NULL);
 
     (* eUICC -> LPA: 2. N_U, SKI_CI *)
@@ -788,6 +850,7 @@ let EUICC(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
     let (It:SessionId_t,NS:Nonce_t,=NU,=S) =
       checksign(sign_5,PK_Sa) in
 
+    (* eUICC completes authentication of the server *)
     event U1(U,Sa,It,S);
 
     (* eUICC -> LPA: 6. Cert_U, Cert_EUM, sign(I_t,N_S,S,I_ac;SK_U) *)
@@ -803,8 +866,8 @@ let EUICC(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
     let (Sp:Id_t,PK_Sp:K_t,=serverOID,=pb) =
       checkcert(Cert_Sp,PK_CI) in
 
-    #if defined R8
-    (* Enable Recommendation 8 *)
+    #if defined R9
+    (* Enable Recommendation 9 *)
     let (=It,=U) =
       checksign(sign_9,PK_Sp) in
     #else
@@ -812,15 +875,12 @@ let EUICC(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
       checksign(sign_9,PK_Sp) in
     #endif
 
+    (* eUICC accepts the server as a profile download entity *)
     event U2(U,Sa,Sp,It);
 
     (* DH *)
     new dU:e_t;
-    #if defined OPTIMIZED_DH_MODEL
-    let QU = DH_3(dU) in
-    #else
     let QU = DH(dU,G) in
-    #endif
 
     (* eUICC -> LPA: 10. sign(I_t,Q_U;SK_U) *)
     out(LPA2EUICC, sign((It,QU),SK_U));
@@ -832,39 +892,45 @@ let EUICC(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
       checksign(sign_13,PK_Sp) in
 
     (* DH *)
-    #if defined OPTIMIZED_DH_MODEL
-    let ZUS = DH_2(dU,QS) in
-    #else
     let ZUS = DH(dU,QS) in
-    #endif
 
     let k = KDF(ZUS,serverOID,U) in
     let kp = KDF(ZUS,serverOID,U) in
+    (
+      (* Profile download and authentication *)
+      let P = D(EP,k) in
+      if MAC_EP = MAC((EP_s,EP),kp) then
+      if MAC_MNO = MAC((mnoId_s,mnoId),kp) then
+      if MAC_ICCID = MAC((iccid_s,iccid),kp) then
 
-    (* Profile download and authentication *)
-    let P = D(EP,k) in
-    if MAC_EP = MAC((EP_s,EP),kp) then
-    if MAC_MNO = MAC((mnoId_s,mnoId),kp) then
-    if MAC_ICCID = MAC((iccid_s,iccid),kp) then
+      (* Sequence *)
+      new Seq:Seq_t;
 
-    (* Sequence *)
-    new Seq:Seq_t;
+      (* eUICC accepts session keys and accepts a profile from the server *)
+      event U3(U,Sa,Sp,It,k,P,mnoId,Iac);
 
-    event U3(U,Sa,Sp,It,k,P,mnoId,Iac);
+      (* eUICC -> LPA: 14. sign(I_t,Seq,S,serverOID,iccid;SK_U) *)
+      out(LPA2EUICC, sign((It,Seq,S,serverOID,iccid),SK_U));
 
-    (* eUICC -> LPA: 14. sign(I_t,Seq,S,serverOID,iccid;SK_U) *)
-    out(LPA2EUICC, sign((It,Seq,S,serverOID,iccid),SK_U));
+      #if defined NOTIFICATION_RESPONSE
+      (* LPA -> eUICC: 17. Delete Notification (Seq) *)
+      in(LPA2EUICC, =Seq);
 
-    #if defined NOTIFICATION_RESPONSE
-    (* LPA -> eUICC: 17. Delete Notification (Seq) *)
-    in(LPA2EUICC, =Seq);
+      event U4(U,Sa,Sp,It,P,S,mnoId,Iac);
 
-    event U4(U,Sa,Sp,It,P,S,mnoId,Iac);
-
-    (* eUICC -> LPA: 18. OK *)
-    out(LPA2EUICC, OK_s);
+      (* eUICC -> LPA: 18. OK *)
+      out(LPA2EUICC, OK_s);
+      #endif
+      0
+    )
+    #if defined FORWARD_SECRECY
+    |
+    (
+      phase 1;
+      out(c,(SK_U));
+      0
+    )
     #endif
-    0
   )
 .
 
@@ -900,7 +966,6 @@ let A_EUICC(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
   (* === Default SM-DP+ profile Initialization === *)
   (* LPA -> eUICC: 4. GetSMDPAddress *)
   (* eUICC -> LPA: 5. S *)
-  (* out(LPA2EUICC, (GetSMDPAddress,S)); *)
   #endif
   !(
     (* === Common handshake and profile download === *)
@@ -934,8 +999,8 @@ let A_EUICC(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
     let (Sp:Id_t,PK_Sp:K_t,=serverOID,=pb) =
       checkcert(Cert_Sp,PK_CI) in
 
-    #if defined R8
-    (* Enable Recommendation 8 *)
+    #if defined R9
+    (* Enable Recommendation 9 *)
     let (=It,=U) =
       checksign(sign_9,PK_Sp) in
     #else
@@ -945,11 +1010,7 @@ let A_EUICC(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
 
     (* DH *)
     new dU:e_t;
-    #if defined OPTIMIZED_DH_MODEL
-    let QU = DH_3(dU) in
-    #else
     let QU = DH(dU,G) in
-    #endif
 
     (* eUICC -> LPA: 10. sign(I_t,Q_U;SK_U) *)
     out(LPA2EUICC, sign((It,QU),SK_U));
@@ -961,35 +1022,40 @@ let A_EUICC(LPA2EUICC:channel,PK_CI:K_t,U:Id_t) =
       checksign(sign_13,PK_Sp) in
 
     (* DH *)
-    #if defined OPTIMIZED_DH_MODEL
-    let ZUS = DH_2(dU,QS) in
-    #else
     let ZUS = DH(dU,QS) in
-    #endif
 
     let k = KDF(ZUS,serverOID,U) in
     let kp = KDF(ZUS,serverOID,U) in
+    (
+      (* Profile download and authentication *)
+      let P = D(EP,k) in
+      if MAC_EP = MAC((EP_s,EP),kp) then
+      if MAC_MNO = MAC((mnoId_s,mnoId),kp) then
+      if MAC_ICCID = MAC((iccid_s,iccid),kp) then
 
-    (* Profile download and authentication *)
-    let P = D(EP,k) in
-    if MAC_EP = MAC((EP_s,EP),kp) then
-    if MAC_MNO = MAC((mnoId_s,mnoId),kp) then
-    if MAC_ICCID = MAC((iccid_s,iccid),kp) then
+      (* Sequence *)
+      new Seq:Seq_t;
 
-    (* Sequence *)
-    new Seq:Seq_t;
+      (* eUICC -> LPA: 14. sign(I_t,Seq,S,serverOID,iccid;SK_U) *)
+      out(LPA2EUICC, sign((It,Seq,S,serverOID,iccid),SK_U));
 
-    (* eUICC -> LPA: 14. sign(I_t,Seq,S,serverOID,iccid;SK_U) *)
-    out(LPA2EUICC, sign((It,Seq,S,serverOID,iccid),SK_U));
+      #if defined NOTIFICATION_RESPONSE
+      (* LPA -> eUICC: 17. Delete Notification (Seq) *)
+      in(LPA2EUICC, =Seq);
 
-    #if defined NOTIFICATION_RESPONSE
-    (* LPA -> eUICC: 17. Delete Notification (Seq) *)
-    in(LPA2EUICC, =Seq);
-
-    (* eUICC -> LPA: 18. OK *)
-    out(LPA2EUICC, OK_s);
+      (* eUICC -> LPA: 18. OK *)
+      out(LPA2EUICC, OK_s);
+      #endif
+      0
+    )
+    #if defined FORWARD_SECRECY
+    |
+    (
+      phase 1;
+      out(c,(SK_U));
+      0
+    )
     #endif
-    0
   )
 .
 #endif
@@ -1015,6 +1081,7 @@ let A_ORDER(PK_CI:K_t) =
   #if defined DEFAULTS
   (* Mark the order as made by attacker, or the impersonated user in scenario 8 *)
   event AttackerOrderForU(userId,U);
+  (* Attacker requests a profile from an MNO *)
   event INTENT(AttackerUserId,mnoId,U,CODE_NULL);
   (* eUICC -> MNO: 0. msg[mnoId,U,userId] *)
   out(LPA2MNO_TLS_UP, (mnoId,U,userId,NONCE_NULL));
@@ -1026,6 +1093,7 @@ let A_ORDER(PK_CI:K_t) =
   in(LPA2MNO_TLS_DOWN, (=mnoId,Iac:Code_t,S:Id_t,serverOID:OID_t,=NONCE_NULL));
   (* Mark the order as made by attacker, or the impersonated user in scenario 8 *)
   event AttackerOrderForIac(userId,Iac);
+  (* Attacker requests a profile from an MNO *)
   event INTENT(AttackerUserId,mnoId,U_OR_NULL,Iac);
   (* Leak out the activation code Iac *)
   out(c, Iac);
@@ -1050,6 +1118,7 @@ let C_SMDP() =
   let Cert_St = certificate(S,PK_St,serverOID,tls) in
   let Cert_Sa = certificate(Sa,PK_Sa,serverOID,auth) in
   let Cert_Sp = certificate(Sp,PK_Sp,serverOID,pb) in
+  (* GSMA authorizes the server to issue profiles *)
   event AUTHORIZE(Sp);
   (* Publish certificates *)
   out(c, (Cert_St,Cert_Sa,Cert_Sp));
@@ -1086,7 +1155,7 @@ let C_EUICC(PK_CI:K_t) =
   #endif
   insert ATTACKER_EUICC(U);
   event CompromiseCert(U);
-  (* Leak out private key *)
+  (* Leak out the private key *)
   out(c, SK_U);
   0
 .
@@ -1164,9 +1233,9 @@ query U:Id_t, Sa:Id_t, It:SessionId_t, S:Id_t, mnoId:Id_t, Iac:Code_t;
         ==> (inj-event(U0(U,S_OR_NULL))
              && inj-event(S0(Sa,It,S,mnoId,IAC_OR_NULL))
             )
-            (* Scenario 5 (pure split): Skip if attacker eUICC is used from compromised server *)
+            (* Scenario 5: Skip if attacker eUICC is used from compromised server *)
             || (event(OWNER(AttackerUserId,U)) && event(CompromiseCert(Sa)))
-            (* Scenario 7 (pure split): Skip if attacker eUICC is used from compromised MNO *)
+            (* Scenario 7: Skip if attacker eUICC is used from compromised MNO *)
             || (event(OWNER(AttackerUserId,U)) && event(CompromiseCert(mnoId)))
 .
 #endif
@@ -1181,10 +1250,10 @@ query U:Id_t, Sa:Id_t, It:SessionId_t, S:Id_t, mnoId:Id_t, Iac:Code_t;
  * session identifiers It.
  *)
 query U:Id_t, Sa:Id_t, Sp:Id_t, It:SessionId_t, Iac:Code_t, mnoId:Id_t,
-      S_1:Id_t, S_2:Id_t, P:Profile_t;
+      S:Id_t, P:Profile_t;
     event(S1(U,Sa,Sp,It,mnoId,IAC_OR_NULL))
-        ==> (inj-event(S0(Sa,It,S_1,mnoId,IAC_OR_NULL))
-             && inj-event(U1(U,Sa,It,S_2))
+        ==> (inj-event(S0(Sa,It,S,mnoId,IAC_OR_NULL))
+             && inj-event(U1(U,Sa,It,S))
             )
             (* Allow the attacker to mess with its own eUICCs and user identity *)
             || (event(OWNER(AttackerUserId,U)) && (event(AttackerOrderForU(AttackerUserId,U)) || event(AttackerOrderForIac(AttackerUserId,Iac))))
@@ -1245,9 +1314,9 @@ query U:Id_t, Sa:Id_t, Sp:Id_t, It:SessionId_t, S:Id_t, Iac:Code_t, mnoId:Id_t;
             )
             (* Allow the attacker to mess with its own eUICCs and user identity *)
             || (event(OWNER(AttackerUserId,U)) && (event(AttackerOrderForU(AttackerUserId,U)) || event(AttackerOrderForIac(AttackerUserId,Iac))))
-            (* Scenario 5 (split): Skip if both eUICC and server are compromised entity *)
+            (* Scenario 5: Skip if both eUICC and server are compromised entity *)
             || (event(OWNER(AttackerUserId,U)) && event(CompromiseCert(Sa)))
-            (* Scenario 7 (pure split): Skip if attacker eUICC is used from compromised MNO *)
+            (* Scenario 7: Skip if attacker eUICC is used from compromised MNO *)
             || (event(OWNER(AttackerUserId,U)) && event(CompromiseCert(mnoId)))
 .
 #endif
@@ -1292,9 +1361,9 @@ query U:Id_t, Sa:Id_t, Sp:Id_t, It:SessionId_t, k:K_t, P1:Profile_t,
             )
             (* Allow the attacker to mess with its own eUICCs and user identity *)
             || (event(OWNER(AttackerUserId,U)) && (event(AttackerOrderForU(AttackerUserId,U)) || event(AttackerOrderForIac(AttackerUserId,Iac))))
-            (* Scenario 5 (split): Skip if both eUICC and server are compromised entity *)
+            (* Scenario 5: Skip if both eUICC and server are compromised entity *)
             || (event(OWNER(AttackerUserId,U)) && event(CompromiseCert(Sa)))
-            (* Scenario 7 (pure split): Skip if attacker eUICC is used from compromised MNO *)
+            (* Scenario 7 : Skip if attacker eUICC is used from compromised MNO *)
             || (event(OWNER(AttackerUserId,U)) && event(CompromiseCert(mnoId)))
 .
 #endif
@@ -1315,9 +1384,9 @@ query U:Id_t, Sa:Id_t, Sp:Id_t, It:SessionId_t, k:K_t, P:Profile_t, mnoId:Id_t,
             )
             (* Allow the attacker to mess with its own eUICCs and user identity *)
             || (event(OWNER(AttackerUserId,U)) && (event(AttackerOrderForU(AttackerUserId,U)) || event(AttackerOrderForIac(AttackerUserId,Iac))))
-            (* Scenario 5 (split): Skip if both eUICC and server are compromised entity *)
+            (* Scenario 5: Skip if both eUICC and server are compromised entity *)
             || (event(OWNER(AttackerUserId,U)) && event(CompromiseCert(Sa)))
-            (* Scenario 7 (pure split): Skip if attacker eUICC is used from compromised MNO *)
+            (* Scenario 7: Skip if attacker eUICC is used from compromised MNO *)
             || (event(OWNER(AttackerUserId,U)) && event(CompromiseCert(mnoId)))
 .
 #endif
@@ -1367,9 +1436,9 @@ query U:Id_t, Sa:Id_t, Sp:Id_t, It:SessionId_t, P:Profile_t, S:Id_t, mnoId:Id_t,
             )
             (* Allow the attacker to mess with its own eUICCs and user identity *)
             || (event(OWNER(AttackerUserId,U)) && (event(AttackerOrderForU(AttackerUserId,U)) || event(AttackerOrderForIac(AttackerUserId,Iac1))))
-            (* Scenario 5 (split): Skip if both eUICC and server are compromised entity *)
+            (* Scenario 5: Skip if both eUICC and server are compromised entity *)
             || (event(OWNER(AttackerUserId,U)) && event(CompromiseCert(Sa)))
-            (* Scenario 7 (pure split): Skip if attacker eUICC is used from compromised MNO *)
+            (* Scenario 7: Skip if attacker eUICC is used from compromised MNO *)
             || (event(OWNER(AttackerUserId,U)) && event(CompromiseCert(mnoId)))
 .
 #endif
@@ -1389,9 +1458,9 @@ query U:Id_t, Sa:Id_t, Sp:Id_t, It:SessionId_t, k:K_t, P:Profile_t, mnoId:Id_t,
             )
             (* Allow the attacker to mess with its own eUICCs and user identity *)
             || (event(OWNER(AttackerUserId,U)) && (event(AttackerOrderForU(AttackerUserId,U)) || event(AttackerOrderForIac(AttackerUserId,Iac))))
-            (* Scenario 5 (split): Skip if both eUICC and server are compromised entity *)
+            (* Scenario 5: Skip if both eUICC and server are compromised entity *)
             || (event(OWNER(AttackerUserId,U)) && event(CompromiseCert(Sa)))
-            (* Scenario 7 (pure split): Skip if attacker eUICC is used from compromised MNO *)
+            (* Scenario 7: Skip if attacker eUICC is used from compromised MNO *)
             || (event(OWNER(AttackerUserId,U)) && event(CompromiseCert(mnoId)))
 .
 #endif
@@ -1413,9 +1482,9 @@ query U:Id_t, Sa:Id_t, Sp:Id_t, It:SessionId_t, k:K_t, P:Profile_t, S:Id_t,
             )
             (* Allow the attacker to mess with its own eUICCs and user identity *)
             || (event(OWNER(AttackerUserId,U)) && event(INTENT(AttackerUserId,mnoId,U_OR_NULL,IAC_OR_NULL)))
-            (* Scenario 5 (split): Skip if both eUICC and server are compromised entity *)
+            (* Scenario 5: Skip if both eUICC and server are compromised entity *)
             || (event(OWNER(AttackerUserId,U)) && event(CompromiseCert(Sa)))
-            (* Scenario 7 (pure split): Skip if attacker eUICC is used from compromised MNO *)
+            (* Scenario 7: Skip if attacker eUICC is used from compromised MNO *)
             || (event(OWNER(AttackerUserId,U)) && event(CompromiseCert(mnoId)))
 .
 #endif
@@ -1453,7 +1522,7 @@ query U:Id_t, Sa:Id_t, Sp:Id_t, It:SessionId_t, k:K_t, P:Profile_t, S:Id_t,
       mnoId:Id_t, Iac:Code_t;
     attacker(k) && event(S2(U,Sa,Sp,It,k,P,mnoId,IAC_OR_NULL))
         ==> false
-            (* Scenario 5 (split): Skip if both eUICC and server are compromised entity *)
+            (* Scenario 5: Skip if both eUICC and server are compromised entity *)
             || (event(OWNER(AttackerUserId,U)) && event(CompromiseCert(Sa)))
             (* Scenario 6 *)
             || (event(CompromiseCert(U)) && (event(AttackerOrderForU(AttackerUserId,U)) || event(AttackerOrderForIac(AttackerUserId,Iac))))
@@ -1471,7 +1540,7 @@ query P:Profile_t, U:Id_t, Sa:Id_t, Sp:Id_t, It:SessionId_t, k:K_t, mnoId:Id_t,
       Iac:Code_t;
     attacker(k) && event(U3(U,Sa,Sp,It,k,P,mnoId,IAC_OR_NULL))
         ==> false
-            (* Scenario 5 (split): Skip if both eUICC and server are compromised entity *)
+            (* Scenario 5: Skip if both eUICC and server are compromised entity *)
             || (event(OWNER(AttackerUserId,U)) && event(CompromiseCert(Sa)))
             (* Scenario 6 *)
             || (event(CompromiseCert(U)) && (event(AttackerOrderForU(AttackerUserId,U)) || event(AttackerOrderForIac(AttackerUserId,Iac))))
@@ -1489,7 +1558,7 @@ query P:Profile_t, U:Id_t, Sa:Id_t, Sp:Id_t, It:SessionId_t, k:K_t, mnoId:Id_t,
       Iac:Code_t;
     attacker(P) && event(S2(U,Sa,Sp,It,k,P,mnoId,IAC_OR_NULL))
         ==> false
-            (* Scenario 5 (split): Skip if both eUICC and server are compromised entity *)
+            (* Scenario 5: Skip if both eUICC and server are compromised entity *)
             || (event(OWNER(AttackerUserId,U)) && event(CompromiseCert(Sa)))
             (* Scenario 6 *)
             || (event(CompromiseCert(U)) && (event(AttackerOrderForU(AttackerUserId,U)) || event(AttackerOrderForIac(AttackerUserId,Iac))))
@@ -1507,7 +1576,7 @@ query P:Profile_t, U:Id_t, Sa:Id_t, Sp:Id_t, It:SessionId_t, k:K_t, mnoId:Id_t,
       Iac:Code_t;
     attacker(P) && event(U3(U,Sa,Sp,It,k,P,mnoId,IAC_OR_NULL))
         ==> false
-            (* Scenario 5 (split): Skip if both eUICC and server are compromised entity *)
+            (* Scenario 5: Skip if both eUICC and server are compromised entity *)
             || (event(OWNER(AttackerUserId,U)) && event(CompromiseCert(Sa)))
             (* Scenario 6 *)
             || (event(CompromiseCert(U)) && (event(AttackerOrderForU(AttackerUserId,U)) || event(AttackerOrderForIac(AttackerUserId,Iac))))
@@ -1534,6 +1603,14 @@ query U:Id_t, Sa:Id_t, Sp:Id_t, It:SessionId_t, P:Profile_t, S:Id_t, mnoId:Id_t,
  .
 #endif
 
+#if defined RESTRICT_DH_REPLAY
+(* ===== RESTRICTIONS ===== *)
+(* Do not allow replay of QS as QU. Necessary to complete verification in some cases. *)
+restriction QU:G_t, QS:G_t;
+  event (QS_SENT(QS)) && event (QU_RECEIVED(QU)) ==> QS<>QU
+.
+#endif
+
 (* ===== MAIN PROCESS ===== *)
 process
   (** == CA == **)
@@ -1556,6 +1633,7 @@ process
   #endif
   #if defined SEPARATE_ATTACKER_EUICC
   | (new U:Id_t; out(c, U);
+     (* Attacker is the owner of the 2nd compromised eUICC *)
      event OWNER(AttackerUserId,U);
      new LPA2EUICC:channel; out(c, LPA2EUICC);
      A_EUICC(LPA2EUICC,PK_CI,U)
@@ -1566,14 +1644,14 @@ process
   (** == Compromised 2nd entities == **)
   #endif
   #if defined SCENARIO_5
-  (* Scenario 5 *)
+  (* Scenario 5: The intended SM-DP+ server is honest, but there exists another compromised server *)
   | C_SMDP()
   #endif
   #if defined SCENARIO_6
-  (* Scenario 6 *)
+  (* Scenario 6: The adversary has compromised the private key of the eUICC in its own device *)
   | C_EUICC(PK_CI)
   #endif
   #if defined SCENARIO_7
-  (* Scenario 7 *)
+  (* Scenario 7: The intended MNO is honest, but there exists another compromised MNO *)
   | C_MNO()
   #endif

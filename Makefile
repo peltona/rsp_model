@@ -3,13 +3,12 @@ SHELL := /bin/bash
 init=DefaultS
 scenario=1
 goal=AuthA
-tls=NoTls
+tls=Tls
 
 ## Flags
-#   -DOPTIMIZED_DH_MODEL        -- Use optimized DH model (faster verification).
 #   -DRELAXED_LPA               -- Choose relaxed LPA that does minimal checks on data it passes through.
-#   -DR1 DR2 DR3 DR7 DR8        -- Enable recommendations from the paper.
-flags="-DOPTIMIZED_DH_MODEL"
+#   -DR1 DR2 DR3 DR7 DR9        -- Enable recommendations from the paper.
+flags=""
 ## Flag automatically enabled for selected goals in the list below:
 #   -DSEPARATE_ATTACKER_EUICC   -- Model attacker-controlled eUICC as a separate process (faster verification).
 
@@ -27,16 +26,17 @@ model_variants=rsp_defaultS rsp_code
 ## Print usage
 usage:
 	@echo 'TARGETS:'
-	@echo ' usage           - display this help and exit'
-	@echo ' models          - create all models'
-	@echo ' clean [host]    - delete generated files'
-	@echo ' verify [host]   - run one query in one model'
-	@echo ' ps [host]       - show status of running queries'
-	@echo ' retrieve [host] - retrieve results from host'
-	@echo ' results_table   - combine results into a table'
+	@echo ' usage              - display this help and exit'
+	@echo ' models             - create all models'
+	@echo ' models_all_queries - create models with all queries in the same file'
+	@echo ' clean [host]       - delete generated files'
+	@echo ' verify [host]      - run one query in one model'
+	@echo ' ps [host]          - show status of running queries'
+	@echo ' retrieve [host]    - retrieve results from host'
+	@echo ' results_table      - combine results into a table'
 	@echo ''
 	@echo 'OPTIONS:'
-	@echo ' [host]          - execute command on remote host'
+	@echo ' [host]             - execute command on remote host'
 
 ## Create all models
 .PHONY: models
@@ -96,6 +96,43 @@ models:
 		done; \
 	done;
 
+## Create models with all queries in the same file
+models_all_queries:
+	rm -rf ./models/*
+	mkdir -p ./models
+	for model in ${model_variants}; do \
+	  flags=${flags}; \
+		if [ "$$model" = 'rsp_defaultS' ]; then \
+			init="DefaultS"; \
+			flags=$$flags' -DDEFAULTS'; \
+		elif [ "$$model" = 'rsp_code' ]; then \
+			init="Code"; \
+			flags=$$flags' -DCODE'; \
+		fi; \
+		for scenario in ${scenarios}; do \
+			for tls in Tls NoTls; do \
+				F=$$flags; \
+				if [ "$$tls" = 'Tls' ]; then \
+					F=$$F' -DUSE_TLS'; \
+				fi; \
+				f=$$F; \
+				# Scenario \
+				f+=" -DSCENARIO_$${scenario} -DSEPARATE_ATTACKER_EUICC"; \
+				# Reachability \
+				f+=' -DREACH'; \
+				# Authentication \
+				for auth_goal in ${auth_goals}; do \
+					f+=" -DAUTH_$${auth_goal}"; \
+				done; \
+				# Secrecy \
+				for sec_goal in ${sec_goals}; do \
+					f+=" -DSEC_$${sec_goal}"; \
+				done; \
+				cpp $$f -P ${model_source} ./models/rsp-$$init-Scenario$$scenario-$$tls.pv; \
+			done; \
+		done; \
+	done;
+
 ## Delete generated files
 clean:
 	read -p "Delete models? [y/n]: " del_models; \
@@ -126,16 +163,16 @@ verify:
 		ssh ${host} "mkdir -p ~/logs"; \
 		scp ./models/rsp-${init}-Scenario${scenario}-${goal}-${tls}.pv ${host}:~/models/; \
 		if [ "${oom}" != "none" ]; then \
-			ssh -n -f ${host} "proverif ~/models/rsp-${init}-Scenario${scenario}-${goal}-${tls}.pv > ./logs/rsp-${init}-Scenario${scenario}-${goal}-${tls}.log & echo ${oom} > /proc/\$$!/oom_score_adj &"; \
+			ssh -n -f ${host} "{ /usr/bin/time -v proverif ./models/rsp-${init}-Scenario${scenario}-${goal}-${tls}.pv; } > ./logs/rsp-${init}-Scenario${scenario}-${goal}-${tls}.log 2>&1 & echo $(oom) > /proc/$$!/oom_score_adj &"; \
 		else \
-			ssh -n -f ${host} "proverif ~/models/rsp-${init}-Scenario${scenario}-${goal}-${tls}.pv > ./logs/rsp-${init}-Scenario${scenario}-${goal}-${tls}.log &"; \
+			ssh -n -f ${host} "{ /usr/bin/time -v proverif ./models/rsp-${init}-Scenario${scenario}-${goal}-${tls}.pv; } > ./logs/rsp-${init}-Scenario${scenario}-${goal}-${tls}.log 2>&1 &"; \
 		fi; \
 	else \
 		mkdir -p ./logs; \
 		if [ "${oom}" != "none" ]; then \
-			proverif ./models/rsp-${init}-Scenario${scenario}-${goal}-${tls}.pv > ./logs/rsp-${init}-Scenario${scenario}-${goal}-${tls}.log & echo $(oom) > /proc/$$!/oom_score_adj; \
+			{ /usr/bin/time -v proverif ./models/rsp-${init}-Scenario${scenario}-${goal}-${tls}.pv; } > ./logs/rsp-${init}-Scenario${scenario}-${goal}-${tls}.log 2>&1 & echo $(oom) > /proc/$$!/oom_score_adj; \
 		else \
-			proverif ./models/rsp-${init}-Scenario${scenario}-${goal}-${tls}.pv > ./logs/rsp-${init}-Scenario${scenario}-${goal}-${tls}.log & echo; \
+			{ /usr/bin/time -v proverif ./models/rsp-${init}-Scenario${scenario}-${goal}-${tls}.pv; } > ./logs/rsp-${init}-Scenario${scenario}-${goal}-${tls}.log 2>&1 & echo; \
 		fi; \
 	fi;
 
@@ -165,7 +202,7 @@ retrieve:
 			rsync -a --ignore-existing ${host}:~/logs/*.log ./logs/${host}/; \
 		fi; \
 		for log in ./logs/${host}/*.log; do \
-			res=`tail -4 $$log | grep -oP "(true\.)|(false\.)|(cannot be proved\.)|(still contradicts the query\.)"`; \
+			res=`tail -50 $$log | grep -oP "(true\.)|(false\.)|(cannot be proved\.)|(still contradicts the query\.)"`; \
 			if [ "$$res" != '' ]; then \
 				cp $$log ./logs/; \
 			fi; \
@@ -174,9 +211,4 @@ retrieve:
 
 ## Combine results into a table
 results_table:
-	read -p "Combine results? [y/n]: " combine_results; \
-	if [ $$combine_results = "y" ] || [ $$combine_results = "Y" ]; then \
-		python3 -c "import utils; utils.results_table_combined(combine=True)"; \
-	else \
-		python3 -c "import utils; utils.results_table_combined(combine=False)"; \
-	fi;
+	python3 -c "import utils; utils.results_table_combined()";
