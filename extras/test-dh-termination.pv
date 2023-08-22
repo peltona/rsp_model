@@ -1,0 +1,113 @@
+(* Example of non-terminating model and query for ProVerif 2.04 *)
+
+(* Verification fails to terminate with either:
+      preciceActions=false, or
+      preciceActions=true and replication of server.
+
+   This is simply a model of server-authenticate DH key exchange where
+   the client sends its unauthenticated DH public parameter first.
+   ProVerif seems to consider attacks where the attacker replays the 
+   server's public DH parameter as the client's public DH parameter
+   in a parallel session. This puts ProVerif into a loop that never
+   ends.
+
+   A similar loop occurs in any protocol where the first-sent DH public 
+   parameter is not authenticated or its authentication is broken.
+
+   One way to ensure termination is a restriction that prevents 
+   replays of the server's public DH parameter as the client's public 
+   DH parameter. The restriction seems does not appear to mask any 
+   attacks because the attacker can create the same execution traces 
+   by sending a random number as the client's public DH parameter.
+*)
+
+set preciseActions = true.
+(* set verboseRules = true. *)
+
+(* Public channel *)
+free c:channel.
+(* ===== DATA TYPES ===== *)
+type Id_t. (* Server/Client identifier *)
+type Nonce_t. (* Nonce *)
+type e_t. (* DH exponent *)
+type G_t. (* DH group *)
+type K_t. (* Key *)
+type Sig_t. (* Signature *)
+
+(* ===== CONSTANTS ===== *)
+const G:G_t [data]. (* DH generator *)
+
+(* ===== EVENTS ===== *)
+event SERVER_KEX_DONE(Id_t,G_t).
+event CLIENT_KEX_DONE(Id_t,G_t).
+event DH_SENT(G_t).
+event DH_RECEIVED(G_t).
+
+(* ===== FUNCTIONS ===== *)
+(* Generate a public key from a private key *)
+fun pk(K_t): K_t.
+(* Sign a bitstring with a private key *)
+fun sign(bitstring,K_t): Sig_t.
+reduc forall bs:bitstring, Sk:K_t;
+  checksign(sign(bs,Sk),pk(Sk)) = bs
+.
+(* Diffie-Hellman key exchange *)
+fun exp(G_t,e_t): G_t.
+equation forall x:e_t, y:e_t;
+  exp(exp(G,x),y) = exp(exp(G,y),x)
+.
+
+(* ===== PROCESSES ===== *)
+(* Server *)
+let Server(S:Id_t,SK_S:K_t) =
+  (* Server-authenticated DH *)
+  in(c, DH_C:G_t);
+  event DH_RECEIVED(DH_C);
+  new y:e_t;
+  let DH_S = exp(G,y) in
+  let Kses = exp(DH_C,y) in
+  event SERVER_KEX_DONE(S,Kses);
+  event DH_SENT(DH_S);
+  out(c, (sign((DH_S,DH_C),SK_S)));
+  0
+.
+(* Client *)
+let Client(S:Id_t,PK_S:K_t) =
+  (* Server-authenticated DH *)
+  new x:e_t;
+  let DH_C = exp(G,x) in
+  out(c, DH_C);
+  in(c, sign2:Sig_t);
+  let (DH_S:G_t,=DH_C) =
+    checksign(sign2,PK_S) in
+  let Kses = exp(DH_S,x) in
+  event CLIENT_KEX_DONE(S,Kses);
+  0
+.
+
+(* ===== QUERIES ===== *)
+(* Reachability, should return false *)
+query S:Id_t, Kses:G_t;
+    event(CLIENT_KEX_DONE(S,Kses))
+    && (inj-event(SERVER_KEX_DONE(S,Kses)))
+.
+(* Authentication of server by client *)
+query S:Id_t, Kses:G_t;
+    event(CLIENT_KEX_DONE(S,Kses))
+        ==> (inj-event(SERVER_KEX_DONE(S,Kses)))
+.
+
+(* ===== RESTRICTIONS ===== *)
+(* Prevent loop by restricting replays of G^y and G^x *)
+(* restriction DH_C:G_t, DH_S:G_t;
+  event(DH_RECEIVED(DH_C)) && event(DH_SENT(DH_S)) ==> DH_C<>DH_S
+. *)
+
+(* ===== MAIN PROCESS ===== *)
+process
+  (* Server identity and key pair *)
+  new S:Id_t; out(c, S);
+  new SK_S:K_t; let PK_S = pk(SK_S) in
+  out (c, PK_S);
+  (** == Honest processes == **)
+  !Server(S,SK_S) | Client(S,PK_S)
